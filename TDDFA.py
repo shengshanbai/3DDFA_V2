@@ -21,7 +21,8 @@ from utils.tddfa_util import (
     ToTensorGjz, NormalizeGjz
 )
 
-make_abs_path = lambda fn: osp.join(osp.dirname(osp.realpath(__file__)), fn)
+
+def make_abs_path(fn): return osp.join(osp.dirname(osp.realpath(__file__)), fn)
 
 
 class TDDFA(object):
@@ -32,7 +33,8 @@ class TDDFA(object):
 
         # load BFM
         self.bfm = BFMModel(
-            bfm_fp=kvs.get('bfm_fp', make_abs_path('configs/bfm_noneck_v3.pkl')),
+            bfm_fp=kvs.get('bfm_fp', make_abs_path(
+                'configs/bfm_noneck_v3.pkl')),
             shape_dim=kvs.get('shape_dim', 40),
             exp_dim=kvs.get('exp_dim', 10)
         )
@@ -44,7 +46,8 @@ class TDDFA(object):
         self.size = kvs.get('size', 120)
 
         param_mean_std_fp = kvs.get(
-            'param_mean_std_fp', make_abs_path(f'configs/param_mean_std_62d_{self.size}x{self.size}.pkl')
+            'param_mean_std_fp', make_abs_path(
+                f'configs/param_mean_std_62d_{self.size}x{self.size}.pkl')
         )
 
         # load model, default output is dimension with length 62 = 12(pose) + 40(shape) +10(expression)
@@ -100,7 +103,8 @@ class TDDFA(object):
 
             roi_box_lst.append(roi_box)
             img = crop_img(img_ori, roi_box)
-            img = cv2.resize(img, dsize=(self.size, self.size), interpolation=cv2.INTER_LINEAR)
+            img = cv2.resize(img, dsize=(self.size, self.size),
+                             interpolation=cv2.INTER_LINEAR)
             inp = self.transform(img).unsqueeze(0)
 
             if self.gpu_mode:
@@ -120,6 +124,20 @@ class TDDFA(object):
             param_lst.append(param)
 
         return param_lst, roi_box_lst
+
+    def pred_crop_face(self, crop_np):
+        img = cv2.resize(crop_np, dsize=(self.size, self.size),
+                         interpolation=cv2.INTER_LINEAR)
+        inp = self.transform(img).unsqueeze(0)
+
+        if self.gpu_mode:
+            inp = inp.cuda(device=self.gpu_id)
+        param = self.model(inp)
+
+        param = param.squeeze().cpu().numpy().flatten().astype(np.float32)
+        param = param * self.param_std + self.param_mean  # re-scale
+        # print('output', param)
+        return param
 
     def recon_vers(self, param_lst, roi_box_lst, **kvs):
         dense_flag = kvs.get('dense_flag', False)
@@ -141,3 +159,10 @@ class TDDFA(object):
             ver_lst.append(pts3d)
 
         return ver_lst
+
+    def reconv_dense(self, param, roi_box):
+        R, offset, alpha_shp, alpha_exp = _parse_param(param)
+        pts3d = R @ (self.bfm.u + self.bfm.w_shp @ alpha_shp + self.bfm.w_exp @ alpha_exp). \
+            reshape(3, -1, order='F') + offset
+        pts3d = similar_transform(pts3d, roi_box, self.size)
+        return pts3d
